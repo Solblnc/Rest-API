@@ -2,11 +2,14 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Solblnc/Rest-API/internal/coment"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	log "github.com/sirupsen/logrus"
 	"net/http"
-	"strconv"
+	"strings"
 )
 
 // Handler - struct of pointers for services
@@ -26,16 +29,84 @@ func NewHandler(service *coment.Service) *Handler {
 	return &Handler{Service: service}
 }
 
+// LoggingMiddleware - adds middleware to endpoints
+func LoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.WithFields(log.Fields{
+			"Method": r.Method,
+			"Path":   r.URL.Path,
+		}).Info("Handled request")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// BasicAuth - provide a basic auth
+func BasicAuth(original func(w http.ResponseWriter, r *http.Request)) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Info("Basic auth endpoint hit")
+		user, pass, ok := r.BasicAuth()
+		if user == "admin" && pass == "password" && ok {
+			original(w, r)
+		} else {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			sendError(w, "not authorized", errors.New("Not authorized"))
+		}
+
+	}
+}
+
+func validateToken(accessToken string) bool {
+	var mySignKey = []byte("mission")
+	token, err := jwt.Parse(accessToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("there has been an error")
+		}
+		return mySignKey, nil
+	})
+
+	if err != nil {
+		return false
+	}
+
+	return token.Valid
+}
+
+// JWTAuth - a handy middleware function that will provide basic auth around specific endpoints
+func JWTAuth(original func(w http.ResponseWriter, r *http.Request)) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Info("jwt auth endpoint hit")
+		authHeader := r.Header["Authorization"]
+		if authHeader == nil {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			sendError(w, "not authorized", errors.New("not authorized"))
+		}
+
+		authHeaderParts := strings.Split(authHeader[0], " ")
+		if len(authHeaderParts) != 2 || strings.ToLower(authHeaderParts[0]) != "bearer" {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			sendError(w, "not authorized", errors.New("not authorized"))
+		}
+
+		if validateToken(authHeaderParts[1]) {
+			original(w, r)
+		} else {
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			sendError(w, "not authorized", errors.New("not authorized"))
+		}
+	}
+}
+
 // SetUpRoutes Set up all the routes for application ...
 func (h *Handler) SetUpRoutes() {
 	fmt.Println("Routes are setted")
 	h.Router = mux.NewRouter()
+	h.Router.Use(LoggingMiddleware)
 
-	h.Router.HandleFunc("/api/comment", h.PostComment).Methods("POST")
+	h.Router.HandleFunc("/api/comment", JWTAuth(h.PostComment)).Methods("POST")
 	h.Router.HandleFunc("/api/comment", h.GetAllComments).Methods("GET")
 	h.Router.HandleFunc("/api/comment/{id}", h.GetComment).Methods("GET")
-	h.Router.HandleFunc("/api/comment/{id}", h.DeleteComment).Methods("DELETE")
-	h.Router.HandleFunc("/api/comment/{id}", h.UpdateComment).Methods("PUT")
+	h.Router.HandleFunc("/api/comment/{id}", BasicAuth(h.DeleteComment)).Methods("DELETE")
+	h.Router.HandleFunc("/api/comment/{id}", BasicAuth(h.UpdateComment)).Methods("PUT")
 
 	h.Router.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=uint8")
@@ -44,123 +115,6 @@ func (h *Handler) SetUpRoutes() {
 			panic(err)
 		}
 	})
-}
-
-func (h *Handler) GetComment(w http.ResponseWriter, r *http.Request) {
-
-	w.Header().Set("Content-Type", "application/json; charset=uint8")
-	w.WriteHeader(http.StatusOK)
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	i, err := strconv.ParseUint(id, 10, 64)
-	if err != nil {
-		sendError(w, "Error in parsing id to uint", err)
-		return
-	}
-
-	comment, err := h.Service.GetComment(uint(i))
-	if err != nil {
-		sendError(w, "Error in retrieving comment by id", err)
-		return
-	}
-
-	if err = json.NewEncoder(w).Encode(comment); err != nil {
-		panic(err)
-	}
-
-}
-
-func (h *Handler) GetAllComments(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=uint8")
-	w.WriteHeader(http.StatusOK)
-
-	comments, err := h.Service.GetAllComments()
-	if err != nil {
-		sendError(w, "Error of retrieve all comments", err)
-		return
-	}
-
-	if err = json.NewEncoder(w).Encode(comments); err != nil {
-		panic(err)
-	}
-
-}
-
-func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
-
-	w.Header().Set("Content-Type", "application/json; charset=uint8")
-	w.WriteHeader(http.StatusOK)
-
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	i, err := strconv.ParseUint(id, 10, 64)
-	if err != nil {
-		sendError(w, "Error in parsing id to uint", err)
-		return
-	}
-
-	err = h.Service.DeleteComment(uint(i))
-	if err != nil {
-		sendError(w, "Error in deleting a comment", err)
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(Response{Message: "Comment deleted"}); err != nil {
-		panic(err)
-	}
-}
-
-func (h *Handler) PostComment(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=uint8")
-	w.WriteHeader(http.StatusOK)
-
-	var comment coment.Comment
-	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
-		sendError(w, "Failed to decode a json body", err)
-		return
-	}
-
-	comment, err := h.Service.PostComment(comment)
-	if err != nil {
-		sendError(w, "Failed to post a new comment", err)
-		return
-	}
-
-	if err = json.NewEncoder(w).Encode(comment); err != nil {
-		panic(err)
-	}
-}
-
-func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json; charset=uint8")
-	w.WriteHeader(http.StatusOK)
-
-	var comment coment.Comment
-	if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
-		sendError(w, "Failed to decode a json body", err)
-		return
-	}
-
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	i, err := strconv.ParseUint(id, 10, 64)
-	if err != nil {
-		sendError(w, "Error in parsing id to uint", err)
-		return
-	}
-
-	comment, err = h.Service.UpdateComment(uint(i), comment)
-	if err != nil {
-		sendError(w, "Failed to update a comment", err)
-		return
-	}
-
-	if err = json.NewEncoder(w).Encode(comment); err != nil {
-		panic(err)
-	}
 }
 
 func sendError(w http.ResponseWriter, message string, err error) {

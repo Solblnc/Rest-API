@@ -1,21 +1,25 @@
 package main
 
 import (
-	"fmt"
 	"github.com/Solblnc/Rest-API/internal/coment"
 	"github.com/Solblnc/Rest-API/internal/database"
 	transport "github.com/Solblnc/Rest-API/internal/transport/http"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net/http"
 )
 
-// struct for the pointers
-
+// App - contain information of an app
 type App struct {
+	Name    string
+	Version string
 }
 
 func (app *App) Run() error {
-	fmt.Println("Server is running")
+	log.SetFormatter(&log.JSONFormatter{})
+	log.WithFields(log.Fields{
+		"AppName":    app.Name,
+		"AppVersion": app.Version,
+	}).Info("Setting up application")
 
 	db, err := database.NewDataBase()
 	if err != nil {
@@ -33,14 +37,19 @@ func (app *App) Run() error {
 	handler.SetUpRoutes()
 
 	if err := http.ListenAndServe(":8080", handler.Router); err != nil {
-		log.Fatal(err)
+		log.Error("Failed to set up server")
+		return err
 	}
 	return nil
 }
 
 func main() {
-	app := App{}
+	app := App{
+		Name:    "Commenting service",
+		Version: "1.0.0",
+	}
 	if err := app.Run(); err != nil {
-		fmt.Println(err)
+		log.Error("Failed to run app")
+		log.Fatal(err)
 	}
 }
